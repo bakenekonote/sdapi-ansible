@@ -10,7 +10,8 @@ import base64
 import re
 import logging
 import time
-from string import Template
+import os
+from jinja2 import Template
 
 class Sdapi(object):
 
@@ -46,49 +47,67 @@ class Sdapi(object):
 		
 
 		#REST POST Template (may put to another template file later)
-		self.add_address_xml = Template("<address><name>sd-api-host-$address</name><address-type>$type</address-type><ip-address>$address</ip-address></address>")
-		self.publish_policy_xml = Template("<publish><policy-ids><policy-id>$policy_id</policy-id></policy-ids></publish>")
-		self.update_devices_xml = Template("<update-devices><sd-ids><id>$device_id</id></sd-ids><service-types><service-type>POLICY</service-type></service-types><update-options><enable-policy-rematch-srx-only>boolean</enable-policy-rematch-srx-only></update-options></update-devices>")
+		self.add_address_xml = Template("""<address>
+	<name>sd-api-host-{{ address }}</name>
+	<address-type>{{ type }}</address-type>
+	<ip-address>{{ address }}</ip-address>
+</address>""")
+		self.publish_policy_xml = Template("""<publish>
+	<policy-ids>
+		<policy-id>{{ policy_id }}</policy-id>
+	</policy-ids>
+</publish>""")
+		self.update_devices_xml = Template("""<update-devices>
+	<sd-ids>
+		<id>{{ device_id }}</id>
+	</sd-ids>
+	<service-types>
+		<service-type>POLICY</service-type>
+	</service-types>
+	<update-options>
+		<enable-policy-rematch-srx-only>boolean</enable-policy-rematch-srx-only>
+	</update-options>
+</update-devices>""")
 		self.modify_rules_xml = Template("""<modify-rules>
-	<edit-version>$policy_edit_ver</edit-version>
-	<policy-id>$policy_id</policy-id>
+	<edit-version>{{ policy_edit_ver }}</edit-version>
+	<policy-id>{{ policy_id }}</policy-id>
 	<added-rules>
 		<added-rule>
-			<name>$rule_name</name>
+			<name>{{ rule_name }}</name>
 			<source-zones>
 				<source-zone>
-					<name>$src_zone</name>
+					<name>{{ src_zone }}</name>
 					<zone-type>ZONE</zone-type>
 				</source-zone>
 			</source-zones>
-			<source-addresses>
+			<source-addresses>{% for src_obj in src_objs %}
 				<source-address>
-					<id>$src_id</id>
-					<name>$src_name</name>
-					<address-type>$src_type</address-type>
-				</source-address>
+					<id>{{ src_obj.id }}</id>
+					<name>{{ src_obj.name }}</name>
+					<address-type>{{ src_obj.type }}</address-type>
+				</source-address>{% endfor %}
 			</source-addresses>
 			<source-excluded-address>false</source-excluded-address>
 			<source-identities/>
 			<destination-zones>
 				<destination-zone>
-					<name>$dst_zone</name>
+					<name>{{ dst_zone }}</name>
 					<zone-type>ZONE</zone-type>
 				</destination-zone>
 			</destination-zones>
-			<destination-addresses>
+			<destination-addresses>{% for dst_obj in dst_objs %}
 				<destination-address>
-					<id>$dst_id</id>
-					<name>$dst_name</name>
-					<address-type>$dst_type</address-type>
-				</destination-address>
+					<id>{{ dst_obj.id }}</id>
+					<name>{{ dst_obj.name }}</name>
+					<address-type>{{ dst_obj.type }}</address-type>
+				</destination-address>{% endfor %}
 			</destination-addresses>
 			<destination-excluded-address>false</destination-excluded-address>
-			<services>
+			<services>{% for srv_obj in srv_objs %}
 				<service>
-					<id>$srv_id</id>
-					<name>$srv_name</name>
-				</service>
+					<id>{{ srv_obj.id }}</id>
+					<name>{{ srv_obj.name }}</name>
+				</service>{% endfor %}
 			</services>
 			<action>PERMIT</action>
 			<vpn-tunnel-refs/>
@@ -106,15 +125,17 @@ class Sdapi(object):
 			<edit-version>0</edit-version>
 			<definition-type>CUSTOM</definition-type>
 			<rule-group-type>CUSTOM</rule-group-type>
-			<rule-group-id>$device_rule_id</rule-group-id>
+			<rule-group-id>{{ device_rule_id }}</rule-group-id>
 			<rule-type>RULE</rule-type>
-			<policy-name>$policy_name</policy-name>
+			<policy-name>{{ device }}</policy-name>
 			<enabled>true</enabled>
 		</added-rule>
 	</added-rules>
 </modify-rules>""")
 		
 	def add_address(self, address):
+		logging.debug("Address address object %s" % address)
+
 		#input check
 		if re.search('^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/(?:3[0-2]|[012]?[0-9]?)$', address): 
 			type = "NETWORK"
@@ -129,7 +150,7 @@ class Sdapi(object):
 			return
 
 		# REST call to Security Directory to add address
-		xml = self.add_address_xml.substitute(address=address, type=type)
+		xml = self.add_address_xml.render(address=address, type=type)
 		resp = requests.post('https://' + self.junosspace_host + '/api/juniper/sd/address-management/addresses',
 								headers=dict(self.auth_header, **self.address_content_type_header),
 								data=xml,
@@ -142,6 +163,7 @@ class Sdapi(object):
 		return result
 
 	def check_add_address(self, address):
+		logging.debug("Getting address reference %s" % address)
 		resp = requests.get('https://' + self.junosspace_host + '/api/juniper/sd/address-management/addresses', headers=self.auth_header, verify=False)
 		if resp.status_code != 200:
 			raise Exception('GET address-management/addresses {}'.format(resp.status_code))
@@ -152,10 +174,12 @@ class Sdapi(object):
 		if (node is not None):
 			result = dict(name=node.find('./name').text, id=node.find('./id').text, type=node.find('./address-type').text)
 		else:
+			logging.info("Address %s not found!, adding it to SD" % address)
 			result = self.add_address(address)
 		return result
 		
 	def check_service(self, service):
+		logging.debug("Getting service reference %s" % service)
 		resp = requests.get('https://' + self.junosspace_host + '/api/juniper/sd/service-management/services?filter=(global eq \'' + service + '\')' , headers=self.auth_header, verify=False)
 		if resp.status_code != 200:
 			raise Exception('GET service-management/services {}'.format(resp.status_code))
@@ -170,6 +194,7 @@ class Sdapi(object):
 			raise Exception('Service not found')
 	
 	def get_device(self, device):
+		logging.debug("Getting device reference %s" % device)
 		resp = requests.get('https://' + self.junosspace_host + '/api/juniper/sd/device-management/devices' , headers=self.auth_header, verify=False)
 		if resp.status_code != 200:
 			raise Exception('GET device-management/devices {}'.format(resp.status_code))
@@ -183,6 +208,7 @@ class Sdapi(object):
 			raise Exception('Device not found')
 
 	def get_policy(self, policy):
+		logging.debug("Getting policy reference %s" % policy)
 		resp = requests.get('https://' + self.junosspace_host + '/api/juniper/sd/fwpolicy-management/firewall-policies?filter=(global eq \'' + policy + '\')'  , headers=self.auth_header, verify=False)
 		if resp.status_code != 200:
 			raise Exception('GET fwpolicy-management/firewall-policies {}'.format(resp.status_code))
@@ -213,7 +239,7 @@ class Sdapi(object):
 		return dict(policy_id=policy_id, edit_version=edit_version, zone_rule_id=zone_rule_id, device_rule_id=device_rule_id )
 	
 	def publish_policy(self, policy_id):
-		xml = self.publish_policy_xml.substitute(policy_id = policy_id)
+		xml = self.publish_policy_xml.render(policy_id = policy_id)
 		resp = requests.post('https://' + self.junosspace_host + '/api/juniper/sd/fwpolicy-management/publish',
 								headers=dict(self.auth_header, **self.publish_policy_content_type_header),
 								data=xml,
@@ -234,7 +260,7 @@ class Sdapi(object):
 				complete = True
 
 	def update_device(self, device_id):
-		xml = self.update_devices_xml.substitute(device_id = device_id)
+		xml = self.update_devices_xml.render(device_id = device_id)
 		resp = requests.post('https://' + self.junosspace_host + '/api/juniper/sd/device-management/update-devices',
 								headers=dict(self.auth_header, **self.update_devices_content_type_header),
 								data=xml,
@@ -283,20 +309,34 @@ class Sdapi(object):
 	def add_rule(self):
 		# Get Object Refeneces
 		device_obj = self.get_device(self.device)
-		logging.debug("device_obj %s" % device_obj)
-		
-		src_obj = self.check_add_address(self.source_addresses)
-		logging.debug("src_obj %s" % src_obj)
-		
-		dst_obj = self.check_add_address(self.destination_addresses)
-		logging.debug("dst_obj %s" % src_obj)
-		
-		srv_obj = self.check_service(self.services)
-		logging.debug("srv_obj %s" % src_obj)
+
+		# Get Source Address References, Add it if not found
+		src_objs = []
+		if isinstance(self.source_addresses, list):
+                  for addr in self.source_addresses:
+                    src_objs.append(self.check_add_address(addr))
+		else :
+                  src_objs.append(self.check_add_address(self.source_addresses))
+
+		# Get Destination Address References, Add it if not found
+		dst_objs = []
+		if isinstance(self.destination_addresses, list):
+                  for addr in self.destination_addresses:
+                    dst_objs.append(self.check_add_address(addr))
+		else :
+                  dst_objs.append(self.check_add_address(self.destination_addresses))
+               
+		# Get Services References
+		srv_objs = []
+		if isinstance(self.services, list):
+                  for service in self.services:
+                    srv_objs.append(self.check_service(service))
+		else :
+		    srv_objs.append(self.check_service(self.services))
 		
 		policy_obj = self.get_policy(device_obj['policy_name'])
 		logging.debug("policy_obj %s" % policy_obj)
-		
+
 		# check if rules already exist
 		resp = requests.get('https://' + self.junosspace_host + '/api/juniper/sd/fwpolicy-management/firewall-rules/' + policy_obj['device_rule_id'] + '/members' , headers=self.auth_header, verify=False)
 		if resp.status_code != 200:
@@ -319,22 +359,17 @@ class Sdapi(object):
 			cookies = self.lock_policy(policy_obj['policy_id'])
 
 			# Update Policy
-			xml = self.modify_rules_xml.substitute( rule_name   = self.change_request_id,
+			xml = self.modify_rules_xml.render( rule_name   = self.change_request_id,
 													src_zone    = self.source_zone,
-													src_name    = src_obj['name'],
-													src_id      = src_obj['id'],
-													src_type    = src_obj['type'],
+													src_objs    = src_objs,
 													dst_zone    = self.destination_zone,
-													dst_name    = dst_obj['name'],
-													dst_id      = dst_obj['id'],
-													dst_type    = dst_obj['type'],
-													srv_id      = srv_obj['id'],
-													srv_name    = srv_obj['name'],
+													dst_objs    = dst_objs,
+													srv_objs    = srv_objs,
 													policy_name = device_obj['policy_name'],
 													device_rule_id = policy_obj['device_rule_id'],
 													policy_id = policy_obj['policy_id'],
 													policy_edit_ver = policy_obj['edit_version'])
-													
+			logging.debug("Dumping policy xml %s" % xml)
 			logging.info("Modifing policy %s" % device_obj['policy_name'])
 			resp = requests.post('https://' + self.junosspace_host + '/api/juniper/sd/fwpolicy-management/modify-rules',
 									headers=dict(self.auth_header, **self.modify_rules_content_type_header),
