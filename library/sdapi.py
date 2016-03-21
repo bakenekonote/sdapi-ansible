@@ -28,6 +28,7 @@ class Sdapi(object):
 		self.action = module.params['action']
 		self.publish = module.params['publish']
 		self.update_devices = module.params['update_devices']
+		self.change_control_workflow = module.params['change_control_workflow']
 		self.source_addresses = module.params['source_addresses']
 		self.source_zone = module.params['source_zone']
 		self.destination_addresses = module.params['destination_addresses']
@@ -43,6 +44,7 @@ class Sdapi(object):
 		self.publish_policy_content_type_header = { 'Content-Type' : 'application/vnd.juniper.sd.fwpolicy-management.publish+xml;version=1;charset=UTF-8' }
 		self.modify_rules_content_type_header = { 'Content-Type' : 'application/vnd.juniper.sd.fwpolicy-management.modify-rules+xml;version=1;charset=UTF-8' }
 		self.update_devices_content_type_header = { 'Content-Type' : 'application/vnd.juniper.sd.device-management.update-devices+xml;version=1;charset=UTF-8' }
+		self.create_cr_content_type_header = { ' Content-Type' : 'application/vnd.juniper.sd.change-request-management.change-request+xml;version=1;charset=UTF-8' }
 		
 		
 
@@ -132,6 +134,17 @@ class Sdapi(object):
 		</added-rule>
 	</added-rules>
 </modify-rules>""")
+		self.create_cr_xml = Template("""<change-request>
+     <priority>{{ priority }}</priority>
+     <description>{{ description }}</description>
+     <policy-id>{{ policy_id }}</policy-id>
+     <approval-due-date>5</approval-due-date>
+     <name>{{ cr_name }}</name>
+     <ticket-no>{{ ticket_number }}</ticket-no>
+     <service-type>POLICY</service-type>
+     <approval-status>PENDING</approval-status>
+</change-request>""")
+
 		
 	def add_address(self, address):
 		logging.debug("Address address object %s" % address)
@@ -305,6 +318,15 @@ class Sdapi(object):
 							)
 		if resp.status_code != 200:
 			raise Exception('Policy Unlock Failure {}'.format(resp.status_code))
+        def create_change_request(self, policy_id):
+		logging.info("Creating change request ID for policy id %s" % policy_id)
+
+	def approve_change_request(self, change_request_id):
+		logging.info("Approve change request ID %s" % change_request_id)
+
+	def deploy_change_request(self, change_request_id):
+		logging.info("Deploy change request ID %s" % change_request_id)
+
 			
 	def add_rule(self):
 		# Get Object Refeneces
@@ -348,7 +370,6 @@ class Sdapi(object):
 			logging.warning("Firewall rules for change request %s already existed" % self.change_request_id);
 		else :
 			# add policy rules
-
 			# Mark changed
 			self.changed = True
 			if self.module.check_mode:
@@ -384,16 +405,24 @@ class Sdapi(object):
 			# Releasing Lock
 			logging.info("Releasing lock for policy %s" % device_obj['policy_name'])
 			self.unlock_policy(policy_obj['policy_id'],cookies)
+
+		#if using change request workflow
+		if self.change_control_workflow:
+			logging.info("Using Change Request Workflow")
+			change_request_id = self.create_change_request(policy_obj['policy_id'])
+			self.approve_change_request(change_request_id)
+			self.deploy_change_request(change_request_id)
 		
-		# Publish Policy
-		if self.publish:
-			logging.info("Publishing policy %s" % device_obj['policy_name'])
-			self.publish_policy(policy_obj['policy_id'])
+		else:
+			# Publish Policy
+			if self.publish:
+				logging.info("Publishing policy %s" % device_obj['policy_name'])
+				self.publish_policy(policy_obj['policy_id'])
 		
-		# Update Device
-		if self.update_devices:
-			logging.info("Updating Device %s" % device_obj['id'])
-			self.update_device(device_obj['id'])
+			# Update Device
+			if self.update_devices:
+				logging.info("Updating Device %s" % device_obj['id'])
+				self.update_device(device_obj['id'])
 
 	def if_changed(self):
 		return self.changed
@@ -410,6 +439,7 @@ def main():
 			device = dict(required=True),
 			action = dict(default='add', choices=['add', 'del']),
 			publish = dict(default=True, type='bool'),
+			change_control_workflow = dict(default=False, type='bool'),
 			update_devices = dict(default=True, type='bool'),
 			source_addresses = dict(required=True),
 			source_zone = dict(required=True),
