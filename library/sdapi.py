@@ -44,9 +44,9 @@ class Sdapi(object):
 		self.publish_policy_content_type_header = { 'Content-Type' : 'application/vnd.juniper.sd.fwpolicy-management.publish+xml;version=1;charset=UTF-8' }
 		self.modify_rules_content_type_header = { 'Content-Type' : 'application/vnd.juniper.sd.fwpolicy-management.modify-rules+xml;version=1;charset=UTF-8' }
 		self.update_devices_content_type_header = { 'Content-Type' : 'application/vnd.juniper.sd.device-management.update-devices+xml;version=1;charset=UTF-8' }
-		self.create_cr_content_type_header = { ' Content-Type' : 'application/vnd.juniper.sd.change-request-management.change-request+xml;version=1;charset=UTF-8' }
-		
-		
+		self.create_cr_content_type_header = { 'Content-Type' : 'application/vnd.juniper.sd.change-request-management.change-request+xml;version=1;charset=UTF-8' }
+		self.approve_cr_content_type_header = { 'Content-Type' : 'application/vnd.juniper.sd.change-request-management.approve-change-requests-request+xml;version=1;charset=UTF-8' }
+		self.deploy_cr_content_type_header = { 'Content-Type' : 'application/vnd.juniper.sd.change-request-management.deploy-request+xml;version=1;charset=UTF-8' }
 
 		#REST POST Template (may put to another template file later)
 		self.add_address_xml = Template("""<address>
@@ -135,16 +135,35 @@ class Sdapi(object):
 	</added-rules>
 </modify-rules>""")
 		self.create_cr_xml = Template("""<change-request>
-     <priority>{{ priority }}</priority>
-     <description>{{ description }}</description>
-     <policy-id>{{ policy_id }}</policy-id>
-     <approval-due-date>5</approval-due-date>
-     <name>{{ cr_name }}</name>
-     <ticket-no>{{ ticket_number }}</ticket-no>
-     <service-type>POLICY</service-type>
-     <approval-status>PENDING</approval-status>
+	<priority>{{ priority }}</priority>
+	<description>{{ description }}</description>
+	<policy-id>{{ policy_id }}</policy-id>
+	<approval-due-date>{{ due_date }}</approval-due-date>
+	<name>{{ cr_name }}</name>
+	<ticket-no/>
+	<service-type>POLICY</service-type>
+	<approval-status>PENDING</approval-status>
 </change-request>""")
+		self.approve_cr_xml = Template("""<approve-change-requests-request>
+	<id-list>
+	<id-list>{{ cr_id }}</id-list>
+	</id-list>
+	<comments>{{ comments }}</comments>
+</approve-change-requests-request>""")
+		self.deploy_cr_xml = Template("""<deploy-request>
+	<schedule-time>0</schedule-time>
+</deploy-request>""")
 
+	def wait_for_job_complete(self, task_id):
+		complete = False
+		while (not complete) :
+			time.sleep (1);
+			resp = requests.get('https://' + self.junosspace_host + '/api/space/job-management/jobs/' + task_id,
+							headers=self.auth_header,
+							verify=False,
+						)
+			if ET.fromstring(resp.text).find('job-status').text != "UNDETERMINED":
+				complete = True
 		
 	def add_address(self, address):
 		logging.debug("Address address object %s" % address)
@@ -155,7 +174,7 @@ class Sdapi(object):
 		elif re.search('^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$', address):
 			type = "IPADDRESS"
 		else:
-			raise Exception('invalid IP address format ' + address)
+			raise Exception('Invalid IP address format ' + address)
 
 		# Mark changed
 		self.changed = True
@@ -215,7 +234,7 @@ class Sdapi(object):
 		node = root.find('./device[name="'+ device +'"]')
 		#if device object exists
 		if (node is not None):
-			result = dict(name=node.find('./name').text, id=node.find('./id').text, policy_name=node.find('./assigned-services/assigned-service/name').text)
+			result = dict(name=node.find('./name').text, id=node.find('./id').text, policy_name=node.find('./assigned-services/assigned-service[type="POLICY"]/name').text)
 			return result
 		else:
 			raise Exception('Device not found')
@@ -261,16 +280,7 @@ class Sdapi(object):
 		if resp.status_code != 202:
 			raise Exception('Publish Policy Failure {}'.format(resp.status_code))
 		task_id = ET.fromstring(resp.text).find('id').text;
-		complete = False
-		while (not complete) :
-			time.sleep (1);
-			resp = requests.get('https://' + self.junosspace_host + '/api/space/job-management/jobs/' + task_id,
-							headers=self.auth_header,
-							verify=False,
-						)
-			logging.debug("Publish Policy Job Result: %s" % resp.text)
-			if ET.fromstring(resp.text).find('job-status').text != "UNDETERMINED":
-				complete = True
+		self.wait_for_job_complete(task_id)
 
 	def update_device(self, device_id):
 		xml = self.update_devices_xml.render(device_id = device_id)
@@ -281,17 +291,8 @@ class Sdapi(object):
 							)
 		if resp.status_code != 202:
 			raise Exception('Update Device {}'.format(resp.status_code))
-		task_id = ET.fromstring(resp.text).find('id').text;
-		complete = False
-		while (not complete) :
-			time.sleep (1);
-			resp = requests.get('https://' + self.junosspace_host + '/api/space/job-management/jobs/' + task_id,
-							headers=self.auth_header,
-							verify=False,
-						)
-			logging.debug("Update Device Job Result: %s" % resp.text)
-			if ET.fromstring(resp.text).find('job-status').text != "UNDETERMINED":
-				complete = True
+		task_id = ET.fromstring(resp.text).find('id').text
+		self.wait_for_job_complete(task_id)
 	
 	def lock_policy(self, policy_id):
 		# REST call to acquire lock
@@ -318,16 +319,68 @@ class Sdapi(object):
 							)
 		if resp.status_code != 200:
 			raise Exception('Policy Unlock Failure {}'.format(resp.status_code))
-        def create_change_request(self, policy_id):
+
+	def create_change_request(self, policy_id, cookies):
 		logging.info("Creating change request ID for policy id %s" % policy_id)
-
-	def approve_change_request(self, change_request_id):
-		logging.info("Approve change request ID %s" % change_request_id)
-
-	def deploy_change_request(self, change_request_id):
-		logging.info("Deploy change request ID %s" % change_request_id)
-
+		
+		xml = self.create_cr_xml.render(priority = 'LOW',
+											description = 'Created by SD API',
+											policy_id = policy_id,
+											due_date = str(int(time.time())+86400)+'000',
+											cr_name = self.change_request_id)
+		
+		resp = requests.post('https://' + self.junosspace_host + '/api/juniper/sd/change-request-management/create-async',
+								headers=dict(self.auth_header, **self.create_cr_content_type_header),
+								data=xml,
+								verify=False,
+								cookies=cookies
+							)
+		if resp.status_code != 200:
+			raise Exception('Create CR Failure {}'.format(resp.status_code))
 			
+		complete = False
+		while (not complete) :
+			time.sleep (1);
+			resp = requests.get('https://' + self.junosspace_host + '/api/juniper/sd/change-request-management/change-requests',
+									headers=self.auth_header,
+									data='',
+									verify=False)
+			if resp.status_code != 200:
+				raise Exception('Get Change request ID Failure {}'.format(resp.status_code))
+			node = ET.fromstring(resp.text).find('./change-request[name="' + self.change_request_id + '"][policy-id="' + policy_id + '"]')
+			if (node is not None):
+				cr_id = node.find('./id').text
+				complete = True
+		
+		return cr_id
+
+	def approve_change_request(self, cr_id):
+		logging.info("Approve change request ID %s" % cr_id)
+
+		xml = self.approve_cr_xml.render( cr_id = cr_id,
+											comments = 'Auto approved by SD API')
+		resp = requests.post('https://' + self.junosspace_host + '/api/juniper/sd/change-request-management/approve-change-requests',
+								headers=dict(self.auth_header, **self.approve_cr_content_type_header),
+								data=xml,
+								verify=False
+							)
+		if resp.status_code != 200:
+			raise Exception('Approve Change request Failure {}'.format(resp.status_code))
+		
+	def deploy_change_request(self, cr_id):
+		logging.info("Deploy change request ID %s" % cr_id)
+		
+		xml = self.deploy_cr_xml.render()
+		resp = requests.post('https://' + self.junosspace_host + '/api/juniper/sd/change-request-management/change-requests/' + cr_id + '/deploy',
+								headers=dict(self.auth_header, **self.deploy_cr_content_type_header),
+								data=xml,
+								verify=False
+							)
+		if resp.status_code != 200:
+			raise Exception('Deploy change request Failure {}'.format(resp.status_code))
+		task_id = ET.fromstring(resp.text).find('./monitorable-task-instance-managed-object[operation="updateDevicesForCRJob"]/id').text
+		self.wait_for_job_complete(task_id)
+				
 	def add_rule(self):
 		# Get Object Refeneces
 		device_obj = self.get_device(self.device)
@@ -335,26 +388,26 @@ class Sdapi(object):
 		# Get Source Address References, Add it if not found
 		src_objs = []
 		if isinstance(self.source_addresses, list):
-                  for addr in self.source_addresses:
-                    src_objs.append(self.check_add_address(addr))
+			for addr in self.source_addresses:
+				src_objs.append(self.check_add_address(addr))
 		else :
-                  src_objs.append(self.check_add_address(self.source_addresses))
+			src_objs.append(self.check_add_address(self.source_addresses))
 
 		# Get Destination Address References, Add it if not found
 		dst_objs = []
 		if isinstance(self.destination_addresses, list):
-                  for addr in self.destination_addresses:
-                    dst_objs.append(self.check_add_address(addr))
+			for addr in self.destination_addresses:
+				dst_objs.append(self.check_add_address(addr))
 		else :
-                  dst_objs.append(self.check_add_address(self.destination_addresses))
+			dst_objs.append(self.check_add_address(self.destination_addresses))
                
 		# Get Services References
 		srv_objs = []
 		if isinstance(self.services, list):
-                  for service in self.services:
-                    srv_objs.append(self.check_service(service))
+			for service in self.services:
+				srv_objs.append(self.check_service(service))
 		else :
-		    srv_objs.append(self.check_service(self.services))
+			srv_objs.append(self.check_service(self.services))
 		
 		policy_obj = self.get_policy(device_obj['policy_name'])
 		logging.debug("policy_obj %s" % policy_obj)
@@ -366,7 +419,7 @@ class Sdapi(object):
 		root = ET.fromstring(resp.text)
 		node = root.find('./firewall-rule[name="'+ self.change_request_id + '"]')
 		#if rules object exists
-		if (node is not None):
+		if (False and node is not None):
 			logging.warning("Firewall rules for change request %s already existed" % self.change_request_id);
 		else :
 			# add policy rules
@@ -377,7 +430,7 @@ class Sdapi(object):
 
 			# Acquiring Lock
 			logging.info("Acquiring lock for policy %s" % device_obj['policy_name'])
-			cookies = self.lock_policy(policy_obj['policy_id'])
+			self.cookies = self.lock_policy(policy_obj['policy_id'])
 
 			# Update Policy
 			xml = self.modify_rules_xml.render( rule_name   = self.change_request_id,
@@ -391,38 +444,44 @@ class Sdapi(object):
 													policy_id = policy_obj['policy_id'],
 													policy_edit_ver = policy_obj['edit_version'])
 			logging.debug("Dumping policy xml %s" % xml)
-			logging.info("Modifing policy %s" % device_obj['policy_name'])
+			logging.info("Modifying policy %s" % device_obj['policy_name'])
 			resp = requests.post('https://' + self.junosspace_host + '/api/juniper/sd/fwpolicy-management/modify-rules',
 									headers=dict(self.auth_header, **self.modify_rules_content_type_header),
 									data=xml,
 									verify=False,
-									cookies=cookies
+									cookies=self.cookies
 								)
 			if resp.status_code != 204:
 				print resp.text
 				raise Exception('Modify Policy Failure {}'.format(resp.status_code))
 
-			# Releasing Lock
-			logging.info("Releasing lock for policy %s" % device_obj['policy_name'])
-			self.unlock_policy(policy_obj['policy_id'],cookies)
+			#if using change request workflow
+			if self.change_control_workflow:
+				logging.info("Using Change Request Workflow")
+				
+				# Create Change Request
+				self.cr_id = self.create_change_request(policy_obj['policy_id'], self.cookies)
+				
+				# Approve Change Request
+				self.approve_change_request(self.cr_id)
+				
+				# Deploy Change Request
+				self.deploy_change_request(self.cr_id)
+			
+			else:
+				# Releasing Lock
+				logging.info("Releasing lock for policy %s" % device_obj['policy_name'])
+				self.unlock_policy(policy_obj['policy_id'], self.cookies)
 
-		#if using change request workflow
-		if self.change_control_workflow:
-			logging.info("Using Change Request Workflow")
-			change_request_id = self.create_change_request(policy_obj['policy_id'])
-			self.approve_change_request(change_request_id)
-			self.deploy_change_request(change_request_id)
-		
-		else:
-			# Publish Policy
-			if self.publish:
-				logging.info("Publishing policy %s" % device_obj['policy_name'])
-				self.publish_policy(policy_obj['policy_id'])
-		
-			# Update Device
-			if self.update_devices:
-				logging.info("Updating Device %s" % device_obj['id'])
-				self.update_device(device_obj['id'])
+				# Publish Policy
+				if self.publish:
+					logging.info("Publishing policy %s" % device_obj['policy_name'])
+					self.publish_policy(policy_obj['policy_id'])
+			
+				# Update Device
+				if self.update_devices:
+					logging.info("Updating Device %s" % device_obj['id'])
+					self.update_device(device_obj['id'])
 
 	def if_changed(self):
 		return self.changed
@@ -468,3 +527,4 @@ def main():
 from ansible.module_utils.basic import *
 if __name__ == '__main__':
 	main()
+
