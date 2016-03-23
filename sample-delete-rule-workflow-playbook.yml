@@ -1,0 +1,22 @@
+---
+- name: test sdapi ansible module
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  tasks: 
+  - name: Delete Firewall Rules and Update Devices
+    sdapi:    
+      junosspace_host: junosspace1.kdc.jnpr.net
+      junosspace_username: super
+      junosspace_password: juniper123
+      change_request_id: ansible-cr123
+      #device: labsrx
+      #source_zone: lab
+      source_addresses: ['10.1.1.1', '10.1.1.2', '10.1.1.3', '10.1.1.4']
+      #destination_zone: jnpr
+      destination_addresses: ['20.1.1.1', '20.1.1.2']
+      services: ['http', 'https'] 
+      action: del
+      publish: True
+      update_devices: True
+      change_control_workflow: True
