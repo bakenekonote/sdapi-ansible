@@ -3,6 +3,154 @@
 # import some python modules that we'll use.  These are all
 # available in Python's core
 
+DOCUMENTATION = '''
+---
+module: sdapi
+short_description: Ansible Module for Juniper Networks Junosspace Security Director policy management
+description:
+	- M(SDAPI) is a ansible module to manipulate Juniper Networks Junosspace Security Director firewall policies
+	- Key Features includes 
+	- firewall rules management (add/delete rules)
+	- auto device selection and zone discovery by route checking
+	- change control workflow
+	- commit and apply changes to firewall devices
+version_added: "1.0"
+author: "Tony Chan, tonychan@juniper.net"
+notes:
+	- current version is tested against Junosspace Security Director 15.1R2 with Ansible 1.9
+requirements:
+	- Junospace Security Director 15.1R2
+	- SRX/vSRX firewall(s)
+	- jinja2 python module
+	- requests python module
+options:
+	junosspace_host:
+		description:
+			- Junosspace host (IP/FQDN)
+		required: true
+		default: null
+		choices: []
+		aliases: []
+		version_added: 1.0
+	junosspace_username:
+		description: 
+			- Junosspace API username
+		required: true
+		default: null
+		choices: []
+		aliases: []
+		version_added: 1.0
+	junosspace_password:
+		description:
+			- Junosspace API password
+		required: true
+		default: null
+		choices: []
+		aliases: []
+		version_added: 1.0
+	change_request_id:
+		description:
+			- Change Request ID (should be unique among policy change). This will be used as the rule name in the device policy
+		required: true
+		default: null
+		choices: []
+		aliases: []
+		version_added: 1.0
+	device:
+		description:
+			- Firewall device name. Automatic device selection will be disabled if argument is supplied
+		required: false
+		default: null
+		choices: []
+		aliases: []
+		version_added: 1.0
+	action:
+		description:
+			- Action to perform (add / delete) policy rules
+		required = true
+		default: null
+		choices: ['add', 'del']
+		aliases: []
+		version_added: 1.0
+	publish:
+		description:
+			- Publish the updated policy (when change_control_workflow is disabled)
+		required = false
+		default: true
+		choices: [true, false]
+		aliases: []
+		version_added: 1.0
+	change_control_workflow:
+		description:
+			- use change control workflow in Security Directory. Must set to true if enabled in SD
+		required: false
+		default: false
+		choices: [true, false]
+		aliases: []
+		version_added: 1.0
+	update_devices:
+		description:
+			- Push policy changes to device (when change_control_workflow is disabled)
+		required = false
+		default: true
+		choices: [true, false]
+		aliases: []
+		version_added: 1.0
+	source_addresses:
+                description:
+                        - list of source addresses(ip or cidr). Will create address object in Security Director if object doesn't exists.
+			- e.g. [ '192.168.1.1', '172.16.1.0/24' ]
+                required = true
+                default: null
+                choices: []
+                aliases: []
+                version_added: 1.0
+	source_zone:
+		description:
+			- source address zone, required if device is specified in argument
+			- e.g. zone_a
+                required = false
+                default: null
+                choices: []
+                aliases: []
+                version_added: 1.0
+	destination_addresses:
+                description:
+                        - list of destination addresses(ip or cidr). Will create address object in Security Director if object doesn't exists.
+			- e.g. [ '192.168.2.2', '172.16.2.0/24' ]
+                required = true
+                default: null
+                choices: []
+                aliases: []
+                version_added: 1.0
+	destination_zone:
+		description:
+			- destination address zone, required if device is specified in argument
+			- e.g. zone_b
+                required = false
+                default: null
+                choices: []
+                aliases: []
+                version_added: 1.0
+	services:
+                description:
+                        - list of services to be allowed. Must be predefined in Security Director.
+			- e.g. [ 'http', 'ftp', 'dns-udp' ]
+                required = true
+                default: null
+                choices: []
+                aliases: []
+                version_added: 1.0
+'''
+
+EXAMPLE = '''
+- action: SDAPI junosspace_host=space.example.com --extra-vars '{"junosspace_user":"super","junosspace_password":"juniper123","change_request_id":"cr1234","device":"labsrx","action":"add","source_address":["10.1.1.1","10.2.1.0/24"],"source_zone":"zone_a","destination_addresses":["8.8.8.8"],"destination_zone":"internet","services":"icmp-ping"}'
+'''
+
+RETURN = '''
+
+'''
+
 import json
 import requests
 import xml.etree.ElementTree as ET
