@@ -1,7 +1,8 @@
 #!/usr/bin/python
 
-# import some python modules that we'll use.  These are all
-# available in Python's core
+# Author Tony Chan <tonychan@juniper.net>, Raymond Lam <raylam@juniper.net>
+# All Right Reserved
+
 
 DOCUMENTATION = '''
 ---
