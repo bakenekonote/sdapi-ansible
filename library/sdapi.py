@@ -198,6 +198,9 @@ class Sdapi(object):
 		self.deploy_cr_content_type_header = { 'Content-Type' : 'application/vnd.juniper.sd.change-request-management.deploy-request+xml;version=1;charset=UTF-8' }
 		self.exec_scripts_content_type_header = { 'Content-Type' : 'application/vnd.net.juniper.space.script-management.exec-scripts+xml;version=2;charset=UTF-8' }
 
+		#lsys store
+		self.lsys = {}
+		
 		#REST POST Template (may put to another template file later)
 		self.add_address_xml = Template("""<address>
 	<name>sd-api-host-{{ address }}</name>
@@ -324,6 +327,10 @@ class Sdapi(object):
                  <paramName>default-route</paramName>
                  <paramValue>{{ default_route }}</paramValue>
            </scriptParam>
+           <scriptParam>
+                 <paramName>logical-system</paramName>
+                 <paramValue>{{ logical_system }}</paramValue>
+           </scriptParam>
          </scriptParams>
    </scriptMgmt>
 </exec-scripts>""")
@@ -391,7 +398,25 @@ class Sdapi(object):
 			return result
 		else:
 			raise Exception('Service not found')
-	
+			
+	def match_lsys_devices(self):
+		#get all devices
+		devices = self.url('get', '/api/space/device-management/devices')
+
+		#get all TAG ending with _root which is lsys srx:
+		nodes = self.url('get', '/api/space/tag-management/tags').findall('./tag')
+		for node in nodes:
+			name = node.find('./name').text 
+			if re.search('_root$', name):
+				#match srx lsys
+				parent_id = devices.find('./device[name="' + name[:-5] + '"]').get('key')
+				for target in node.findall('./targets/target'):
+					device_id = target.get("href")
+					device_id = device_id[device_id.rfind('/')+1:] 
+					if device_id != parent_id:
+						self.lsys[device_id] = parent_id
+		logging.debug("match_lsys_devices dump : " + json.dumps(self.lsys))
+					
 	def get_device(self, device, add_rule):
 		if add_rule:
 			# Get Source Address References, Add it if not found
@@ -427,12 +452,15 @@ class Sdapi(object):
 			else:
 				raise Exception('Device not found')
 		else:
-			logging.debug('Auto fetching the device list and zone info from Junos Space script')
-		
+			logging.info('Auto fetching the device list and zone info from Junos Space script')
+			# match lsys to master devices
+			self.match_lsys_devices()
 			nodes = self.url('get', '/api/juniper/sd/device-management/devices').findall('./device')
 			if add_rule:
 				if len(nodes) > 0:
-					result = [ dict(name=node.find('./name').text, 
+					result = []
+					for node in nodes:
+						result = [ dict(name=node.find('./name').text, 
 									id=node.find('./id').text, 
 									policy_name=node.find('./assigned-services/assigned-service[type="POLICY"]/name').text,
 									services=self.services_info
@@ -441,7 +469,7 @@ class Sdapi(object):
 					raise Exception('Device not found')
 					
 				# Fetch the script info
-				node = self.url('get', '/api/space/script-management/scripts').find('./script[scriptName="sd-demo-get-zone.slax"]')
+				node = self.url('get', '/api/space/script-management/scripts').find('./script[scriptName="sd-demo-get-zone-lsys.slax"]')
 				if node is not None:
 					script_id = node.find('./id').text
 				else:
@@ -456,7 +484,15 @@ class Sdapi(object):
 					else:
 						raise Exception('SD device not found in Space')
 
-					xml = self.exec_scripts_xml.render(script_id=script_id, device_id=dev['space_platform_id'], address_list=','.join(self.source_addresses + self.destination_addresses), default_route=True)
+					#if device is a lsys
+					if self.lsys.get(dev['space_platform_id']):
+						logging.debug('Working on lsys ' + dev['space_platform_id'] + ' ' + dev['name'])
+						xml = self.exec_scripts_xml.render(script_id=script_id, device_id=self.lsys[dev['space_platform_id']], address_list=','.join(self.source_addresses + self.destination_addresses), default_route=True, logical_system = dev['name'])
+					else:
+						#if device is not a lsys
+						logging.debug('Working on non lsys ' + dev['space_platform_id'])
+						xml = self.exec_scripts_xml.render(script_id=script_id, device_id=dev['space_platform_id'], address_list=','.join(self.source_addresses + self.destination_addresses), default_route=True, logical_system = "")
+					#Call space to execute script on device
 					dev['script_task_id'] = self.url('post', '/api/space/script-management/scripts/exec-scripts', headers=self.exec_scripts_content_type_header, data=xml).find('./id').text
 				
 				# Get the script result & analyse the data
@@ -465,6 +501,7 @@ class Sdapi(object):
 						logging.debug('Get zone info success for %s' % dev['name'])
 						job_result = self.url('get', '/api/space/script-management/job-instances/' + dev['script_task_id'] + '/script-mgmt-job-results').find('./script-mgmt-job-result/job-remarks').text
 						job_result = re.search(r'<output>(.*)</output>', job_result, re.DOTALL).group(1)
+						logging.debug('route result for ' + dev['name'] + ' : ' + job_result )
 						route = {}
 						for line in job_result.splitlines():
 							item = line.split('|')
@@ -703,10 +740,6 @@ def main():
 	)
 	sdapi = Sdapi(module)
 	 
-	if module.check_mode:
-	# Check if any changes would be made but don't actually make those changes
-		module.exit_json(changed=True)
-
 	if sdapi.action == "add":
 		sdapi.add_rule()
 		module.exit_json(changed=sdapi.if_changed())

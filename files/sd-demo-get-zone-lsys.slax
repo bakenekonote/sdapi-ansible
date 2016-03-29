@@ -1,0 +1,123 @@
+version 1.0;
+ns junos = "http://xml.juniper.net/junos/*/junos";
+ns xnm = "http://xml.juniper.net/xnm/1.1/xnm";
+ns jcs = "http://xml.juniper.net/junos/commit-scripts/1.0";
+ns sdapi = "http://xml.juniper.net/sdapi/1.0";
+
+import "junos.xsl";
+
+/* @CONTEXT = "/device" */
+/* @ISLOCAL = "true" */
+/* @NAME = "Get Zone Info" */
+/* @EXECUTIONTYPE = "SINGLEEXECUTION" */
+/* @PASSSPACEAUTHHEADER = "true" */
+/* @VARIABLECONTEXT = "[{'name':'address-list','parameterscope':'global'},{'name':'default-route','parameterscope':'global'},{'name':'logical-system','parameterscope':'global'}]" */
+/* @FAILJOBSTRING = "No Route Info" */
+
+param $address-list;
+param $default-route = "True";
+param $logical-system = "";
+
+
+var $arguments = {
+	<argument> {
+		<name> "address-list";
+		<description> "Address List";
+	}
+	<argument> {
+		<name> "default-route";
+		<description> "Include default route in the next-hop search";
+	}
+	<argument> {
+		<name> "logical-system";
+		<description> "Logical System (Empty if master instance)";
+	}
+}
+
+match / {
+	<op-script-results> {
+		<output> {
+			var $conn = jcs:open();
+			
+			if ($conn) {
+				var $address = jcs:split(",", $address-list);
+				var $zone-info := {
+					for-each($address) {
+						if (jcs:regex("^((25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})(|/([0-2][0-9]|3[0-2]))$", .)) {
+							<address> {
+								<name> .;
+								copy-of sdapi:get_zone($conn, ., $logical-system);
+							}
+						}
+					}
+				}
+				var $output = {
+					for-each($zone-info/address) {
+						for-each(entry) {
+							expr ../name _ "|" _ table _ "|" _ route _ "|" _ nh-intf _ "|" _ zone _ "\n";
+						}
+					}
+				}
+				if ($output != "") {
+					expr $output;
+				} else {
+					expr "No Route Info";
+				}
+				expr jcs:close($conn);
+
+			} else {
+				expr jcs:output("unable to open a connection.");
+			}
+		}
+	}
+}
+
+function sdapi:get_zone($conn, $route, $lsys) {
+	var $get-route-rpc = {
+		if ($lsys == "") {
+			<get-route-information> {
+				<destination> $route;
+				<best>;
+			}
+		} else {
+			<get-route-information> {
+				<logical-system> $lsys;
+				<destination> $route;
+				<best>;
+			}	
+		}
+	}
+	var $get-route = jcs:execute($conn, $get-route-rpc);
+
+	if (count($get-route/route-table)>0) {
+		var $result := {
+			for-each ($get-route/route-table) {
+				if (rt/rt-destination != "0.0.0.0/0" || $default-route == "True") {
+					var $nh-intf = {
+						if (rt/rt-entry/nh/nh-local-interface) {
+							expr rt/rt-entry/nh/nh-local-interface;
+						} else if (rt/rt-entry/nh[selected-next-hop]/via) {
+							expr rt/rt-entry/nh[selected-next-hop]/via;
+						}
+					}
+					if ($nh-intf != "") {
+						var $get-interface-rpc = <get-interface-information> {
+							<interface-name> $nh-intf;
+						}
+						var $get-interface = jcs:execute($conn, $get-interface-rpc);
+						if ($get-interface/logical-interface/logical-interface-zone-name) {
+							<entry> {
+								<table> table-name;
+								<route> rt/rt-destination;
+								<nh-intf> $nh-intf;
+								<zone> $get-interface/logical-interface/logical-interface-zone-name;
+							}
+						}
+					}
+				}
+			}
+		}
+		result $result;
+	}
+}
+
