@@ -1,21 +1,21 @@
 ---
-- name: test sdapi ansible module
+- name: Demo firewall policy which involves multiple physical firewalls
   hosts: localhost
   connection: local
   gather_facts: no
   tasks: 
-  - name: Add, Publish Firewall Policy
+  - name: add policy between vm and google dns
     sdapi:    
       junosspace_host: junosspace1.kdc.jnpr.net
       junosspace_username: super
       junosspace_password: juniper123
-      change_request_id: cr123
+      change_request_id: ansible-multi-physical-vm-google-icmp
       #device: labsrx
       #source_zone: lab
-      source_addresses: ['10.1.1.1', '10.1.1.2', '10.1.1.3', '10.1.1.4']
+      source_addresses: ['172.27.171.67']
       #destination_zone: jnpr
-      destination_addresses: ['20.1.1.1', '20.1.1.2']
-      services: ['http', 'https'] 
+      destination_addresses: ['8.8.8.8']
+      services: ['icmp-all'] 
       action: del
       publish: True
       update_devices: True

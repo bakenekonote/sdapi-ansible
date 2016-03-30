@@ -161,6 +161,7 @@ import logging
 import time
 import os
 from jinja2 import Template
+import pprint
 
 class Sdapi(object):
 
@@ -370,10 +371,11 @@ class Sdapi(object):
 		# Mark changed
 		self.changed = True
 		if self.module.check_mode:
-			return
+			logging.info("by passing add address as requested by check_mode for address " + address)
+			return dict(name="dummy_name_" + address, id="dummy_id", type=type, prefix=address)
 
 		# REST call to Security Directory to add address
-		xml = self.add_address_xml.render(address=address, type=type)
+		xml = self.add_address_xml.render(address=address, type=type) 
 		node = self.url('post', '/api/juniper/sd/address-management/addresses', headers=self.address_content_type_header, data=xml)
 		result = dict(name=node.find('name').text, id=node.find('id').text, type=node.find('address-type').text, prefix=address)
 		return result
@@ -385,7 +387,7 @@ class Sdapi(object):
 		if node is not None:
 			result = dict(name=node.find('./name').text, id=node.find('./id').text, type=node.find('./address-type').text, prefix=address)
 		else:
-			logging.debug('Address %s not found!, adding it to SD' % address)
+			logging.info('Address %s not found in address book, adding it to SD' % address)
 			result = self.add_address(address)
 		return result
 		
@@ -415,7 +417,7 @@ class Sdapi(object):
 					device_id = device_id[device_id.rfind('/')+1:] 
 					if device_id != parent_id:
 						self.lsys[device_id] = parent_id
-		logging.debug("match_lsys_devices dump : " + json.dumps(self.lsys))
+		logging.debug("match_lsys_devices dump : " + pprint.pformat(self.lsys))
 					
 	def get_device(self, device, add_rule):
 		if add_rule:
@@ -460,14 +462,16 @@ class Sdapi(object):
 				if len(nodes) > 0:
 					result = []
 					for node in nodes:
-						result = [ dict(name=node.find('./name').text, 
+						if node.find('./assigned-services/assigned-service[type="POLICY"]/name') is not None: #bypassing vpls common lsys
+							logging.info('including device ' + node.find('./name').text)
+							result.append(dict(name=node.find('./name').text, 
 									id=node.find('./id').text, 
 									policy_name=node.find('./assigned-services/assigned-service[type="POLICY"]/name').text,
 									services=self.services_info
-									) for node in nodes ]
+									))
 				else:
 					raise Exception('Device not found')
-					
+
 				# Fetch the script info
 				node = self.url('get', '/api/space/script-management/scripts').find('./script[scriptName="sd-demo-get-zone-lsys.slax"]')
 				if node is not None:
@@ -486,11 +490,11 @@ class Sdapi(object):
 
 					#if device is a lsys
 					if self.lsys.get(dev['space_platform_id']):
-						logging.debug('Working on lsys ' + dev['space_platform_id'] + ' ' + dev['name'])
+						logging.info('Running route checking slax script on lsys device ' + dev['space_platform_id'] + ' ' + dev['name'])
 						xml = self.exec_scripts_xml.render(script_id=script_id, device_id=self.lsys[dev['space_platform_id']], address_list=','.join(self.source_addresses + self.destination_addresses), default_route=True, logical_system = dev['name'])
 					else:
 						#if device is not a lsys
-						logging.debug('Working on non lsys ' + dev['space_platform_id'])
+						logging.info('Running route checking slax script on non-lsys device ' + dev['space_platform_id'] + ' ' + dev['name'])
 						xml = self.exec_scripts_xml.render(script_id=script_id, device_id=dev['space_platform_id'], address_list=','.join(self.source_addresses + self.destination_addresses), default_route=True, logical_system = "")
 					#Call space to execute script on device
 					dev['script_task_id'] = self.url('post', '/api/space/script-management/scripts/exec-scripts', headers=self.exec_scripts_content_type_header, data=xml).find('./id').text
@@ -498,10 +502,10 @@ class Sdapi(object):
 				# Get the script result & analyse the data
 				for dev in result:
 					if self.wait_for_job_complete(dev['script_task_id']) == "SUCCESS":
-						logging.debug('Get zone info success for %s' % dev['name'])
+						logging.info('Get zone info success for %s' % dev['name'])
 						job_result = self.url('get', '/api/space/script-management/job-instances/' + dev['script_task_id'] + '/script-mgmt-job-results').find('./script-mgmt-job-result/job-remarks').text
 						job_result = re.search(r'<output>(.*)</output>', job_result, re.DOTALL).group(1)
-						logging.debug('route result for ' + dev['name'] + ' : ' + job_result )
+						logging.debug('route result for ' + dev['name'] + ' : ' + '\n' + job_result )
 						route = {}
 						for line in job_result.splitlines():
 							item = line.split('|')
@@ -516,22 +520,31 @@ class Sdapi(object):
 									if not dev['destination_zone'].get(route[dst]['zone']): dev['destination_zone'][route[dst]['zone']] = set()
 									dev['source_zone'][route[src]['zone']].add(src)
 									dev['destination_zone'][route[dst]['zone']].add(dst)
+									logging.info('policy required on device ' + dev['name'] + ' from zone ' + route[src]['zone'] + ' ' + src + ' to zone ' + route[dst]['zone'] + ' ' + dst)
+						logging.debug("debug dev: \n" + pprint.pformat(dev))
+						logging.debug("debug dev2a: \n" + pprint.pformat(self.source_info))
+						logging.debug("debug dev2b: \n" + pprint.pformat(self.destination_info))
 						if dev.get('source_zone') and dev.get('destination_zone'):
 							for zone in dev['source_zone']:
+								logging.debug("debug dev3: \n" + pprint.pformat(zone))
 								dev['source_zone'][zone] = [ zone_info for zone_info in self.source_info.values()[0] if zone_info['prefix'] in dev['source_zone'][zone] ]
 							for zone in dev['destination_zone']:
+								logging.debug("debug dev4: \n" + pprint.pformat(zone))
 								dev['destination_zone'][zone] = [zone_info for zone_info in self.destination_info.values()[0] if zone_info['prefix'] in dev['destination_zone'][zone] ]
 				
 				result = [ dev for dev in result if dev.get('source_zone') and dev.get('destination_zone') ]
 			else:
 				if len(nodes) > 0:
-					result = [ dict(name=node.find('./name').text, 
+					result = []
+					for node in nodes:
+						if node.find('./assigned-services/assigned-service[type="POLICY"]/name') is not None: #bypassing vpls common lsys
+							logging.info('including device ' + node.find('./name').text)
+							result.append(dict(name=node.find('./name').text, 
 									id=node.find('./id').text, 
-									policy_name=node.find('./assigned-services/assigned-service[type="POLICY"]/name').text
-									) for node in nodes ]
+									policy_name=node.find('./assigned-services/assigned-service[type="POLICY"]/name').text,
+									))
 				else:
 					raise Exception('Device not found')
-			
 			return result
 
 	def get_policy(self, device):
@@ -568,7 +581,7 @@ class Sdapi(object):
 		self.url('post', '/api/juniper/sd/fwpolicy-management/firewall-policies/' + policy_id + '/unlock', cookies=cookies)
 
 	def create_change_request(self, policy_id, policy_name, cookies):
-		logging.debug('Creating change request ID for policy id %s' % policy_id)
+		logging.info('Creating change request ID for policy id %s' % policy_id)
 		
 		cr_name = self.change_request_id + '-' + policy_name
 		xml = self.create_cr_xml.render(priority = 'LOW',
@@ -588,13 +601,13 @@ class Sdapi(object):
 		return cr_id
 
 	def approve_change_request(self, cr_id):
-		logging.debug('Approve change request ID %s' % cr_id)
+		logging.info('Approve change request ID %s' % cr_id)
 
 		xml = self.approve_cr_xml.render( cr_id = cr_id, comments = 'Auto approved by SD API')
 		self.url('post', '/api/juniper/sd/change-request-management/approve-change-requests', headers=self.approve_cr_content_type_header, data=xml)
 		
 	def deploy_change_request(self, cr_id):
-		logging.debug('Deploy change request ID %s' % cr_id)
+		logging.info('Deploy change request ID %s' % cr_id)
 		
 		xml = self.deploy_cr_xml.render()
 		node = self.url('post', '/api/juniper/sd/change-request-management/change-requests/' + cr_id + '/deploy', headers=self.deploy_cr_content_type_header, data=xml)
@@ -616,17 +629,17 @@ class Sdapi(object):
 		
 		else:
 			# Releasing Lock
-			logging.debug('Releasing lock for policy %s' % device['policy_name'])
+			logging.info('Releasing lock for policy %s' % device['policy_name'])
 			self.unlock_policy(policy['policy_id'], self.cookies)
 
 			# Publish Policy
 			if self.publish:
-				logging.debug('Publishing policy %s' % device['policy_name'])
+				logging.info('Publishing policy %s' % device['policy_name'])
 				self.publish_policy(policy['policy_id'])
 		
 			# Update Device
 			if self.update_devices:
-				logging.debug('Updating Device %s' % device['id'])
+				logging.info('Updating Device %s' % device['id'])
 				device['update_task_id'] = self.update_device(device['id'])
 
 	def del_rule(self):
@@ -638,14 +651,14 @@ class Sdapi(object):
 
 			if node is not None:
 				rules = [ rule.find('./id').text for rule in node ]
-				
 				if rules:
+					logging.info("Policy " + device['policy_name'] + " on device " + device['name'] + ' to be updated')
 					self.changed = True
 					if self.module.check_mode:
 						return
 
 					# Acquiring Lock
-					logging.debug('Acuiring lock for policy %s' % device['policy_name'])
+					logging.info('Acuiring lock for policy %s' % device['policy_name'])
 					self.cookies = self.lock_policy(device['policy_id'])
 					
 					# Update Policy
@@ -654,14 +667,16 @@ class Sdapi(object):
 														rules = rules
 														)
 					#logging.debug('Dumping policy xml %s' % xml)
-					logging.debug('Modifying policy %s' % device['policy_name'])
+					logging.info('Modifying policy %s' % device['policy_name'])
 					self.url('post', '/api/juniper/sd/fwpolicy-management/modify-rules', headers=self.modify_rules_content_type_header, data=xml, cookies=self.cookies)
 					
 					self.commit_rule_change(device)
 				
 		for device in device_objs:
 			if device.get('update_task_id'):
-				self.wait_for_job_complete(device['update_task_id'])
+				logging.info('waiting for deploy completion on ' + device['name'])
+				job_status = self.wait_for_job_complete(device['update_task_id'])
+				logging.info('Deploy ' + job_status + ' on ' + device['name'])
 	
 	def add_rule(self):
 		# Check the optional parameters, but mandatory for add rule
@@ -685,10 +700,11 @@ class Sdapi(object):
 				# Mark changed
 				self.changed = True
 				if self.module.check_mode:
-					return
+					logging.info('by passing add rules process as requested by check_mode for device ' + device['name'])
+					continue
 
 				# Acquiring Lock
-				logging.debug('Acquiring lock for policy %s' % device['policy_name'])
+				logging.info('Acquiring lock for policy %s' % device['policy_name'])
 				self.cookies = self.lock_policy(device['policy_id'])
 
 				# Update Policy
@@ -701,22 +717,26 @@ class Sdapi(object):
 													policy_id = device['policy_id'],
 													policy_edit_ver = device['edit_version']
 													)
-				logging.debug('Modifying policy %s' % device['policy_name'])
+				logging.info('Modifying policy %s' % device['policy_name'])
 				self.url('post', '/api/juniper/sd/fwpolicy-management/modify-rules', headers=self.modify_rules_content_type_header, data=xml, cookies=self.cookies)
 				
 				self.commit_rule_change(device)
 
 		for device in device_objs:
 			if device.get('update_task_id'):
-				self.wait_for_job_complete(device['update_task_id'])
+				logging.info('waiting for deploy completion on ' + device['name'])
+				job_status = self.wait_for_job_complete(device['update_task_id'])
+				logging.info('Deploy ' + job_status + ' on ' + device['name'])
+
 
 	def if_changed(self):
 		return self.changed
 # ===========================================
 
 def main():
-	logging.basicConfig(filename="/tmp/sdapi.log",level=logging.DEBUG)
-	logging.getLogger('requests').setLevel(logging.CRITICAL)
+	logging.basicConfig(filename="/tmp/sdapi.log",level=logging.INFO, format='%(asctime)s %(message)s')
+	logging.getLogger('requests').setLevel(logging.WARNING)
+	logging.getLogger("urllib3").setLevel(logging.WARNING)
 	
 	module = AnsibleModule(
 		argument_spec = dict(
@@ -739,13 +759,15 @@ def main():
 		required_together = [['device','source_zone','destination_zone']],
 	)
 	sdapi = Sdapi(module)
-	 
+	logging.info("***************************** Start sdapi module *****************************")
 	if sdapi.action == "add":
 		sdapi.add_rule()
+		logging.info("***************************** End of sdapi module *****************************")
 		module.exit_json(changed=sdapi.if_changed())
 
 	elif sdapi.action == "del":
 		sdapi.del_rule()
+		logging.info("***************************** End of sdapi module *****************************")
 		module.exit_json(changed=sdapi.if_changed())
 		
 # import module snippets

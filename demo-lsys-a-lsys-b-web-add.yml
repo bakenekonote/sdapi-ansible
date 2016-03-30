@@ -1,22 +1,22 @@
 ---
-- name: test sdapi ansible module
+- name: Demo Add policy between two lsys
   hosts: localhost
   connection: local
   gather_facts: no
   tasks: 
-  - name: Delete firewall rules and update Devices
+  - name: add policy between two lsys 
     sdapi:    
       junosspace_host: junosspace1.kdc.jnpr.net
       junosspace_username: super
       junosspace_password: juniper123
-      change_request_id: ansible-cr123
+      change_request_id: ansible-lsys-a-b-web
       #device: labsrx
       #source_zone: lab
-      source_addresses: ['172.27.169.3', '172.27.169.4']
+      source_addresses: ['10.111.1.10', '10.111.1.11', '10.111.1.12']
       #destination_zone: jnpr
-      destination_addresses: ['8.8.8.8', '8.8.4.4']
-      services: ['icmp-ping'] 
-      action: del
+      destination_addresses: ['10.112.1.10', '10.112.1.11']
+      services: ['http', 'https'] 
+      action: add
       publish: True
       update_devices: True
       change_control_workflow: True
