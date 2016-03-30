@@ -7,8 +7,8 @@
   - name: add policy between two zone in a lsys 
     sdapi:    
       junosspace_host: junosspace1.kdc.jnpr.net
-      junosspace_username: super
-      junosspace_password: juniper123
+      junosspace_username: sdapi
+      junosspace_password: sdapi123
       change_request_id: ansible-lsys-a1-a2-ftp
       #device: labsrx
       #source_zone: lab
